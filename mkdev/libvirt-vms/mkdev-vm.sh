@@ -167,7 +167,7 @@ create_vm() {
         --name "$name" \
         --memory "$mem" \
         --vcpus "$vcpus" \
-        --network "$NETWORK_NAME" \
+        --network network="$NETWORK_NAME" \
         --memorybacking source.type=memfd,access.mode=shared \
         --disk path="$disk_path" \
         --filesystem source.dir="$shared_dir",target.dir="$SHARE_TAG",driver.type=virtiofs \
