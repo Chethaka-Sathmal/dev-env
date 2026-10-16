@@ -13,6 +13,8 @@ readonly TEMPLATE_FILE="$CLOUD_INIT_DIR/template.yaml"
 readonly PLACEHOLDER="{VM_NAME}"
 readonly DEFAULT_MEM=2048
 readonly DEFAULT_VCPUS=2
+readonly SHARE_TAG="host-share"
+readonly DEFAULT_GUEST_MOUNT="/workspace"
 
 # Set as the script runs; used by cleanup()
 user_data_file=""
@@ -62,6 +64,17 @@ read_vm_name() {
     [[ "$name" =~ ^[a-zA-Z0-9_-]+$ ]] ||
         die "vm name may only contain letters, numbers, - and _"
     echo "$name"
+}
+
+# Prints the absolute path of the host directory to share with the vm
+read_shared_dir() {
+    local dir
+    read -rp "host directory to share with the vm: " dir
+    dir="${dir/#\~/$HOME}"
+    [[ -n "$dir" ]] || die "shared directory is required"
+    [[ -d "$dir" ]] || die "directory does not exist: $dir"
+    # libvirt needs an absolute path for the share source
+    realpath "$dir"
 }
 
 check_vm_does_not_exist() {
@@ -120,11 +133,17 @@ read_os_variant() {
 }
 
 create_user_data_file() {
-    local name=$1
+    local name=$1 guest_mount=$2
     info "generating cloud-init user-data from $TEMPLATE_FILE"
     [[ -f "$TEMPLATE_FILE" ]] || die "template not found: $TEMPLATE_FILE"
     user_data_file=$(mktemp --suffix=.yaml)
     sed "s/$PLACEHOLDER/$name/g" "$TEMPLATE_FILE" >"$user_data_file"
+    # Mount the virtiofs share on boot; nofail keeps a missing share from blocking boot
+    cat >>"$user_data_file" <<EOF
+
+mounts:
+  - [ $SHARE_TAG, "$guest_mount", virtiofs, "defaults,nofail", "0", "0" ]
+EOF
     ok "user-data written to $user_data_file (temporary)"
 }
 
@@ -140,13 +159,16 @@ create_disk() {
 }
 
 create_vm() {
-    local name=$1 mem=$2 vcpus=$3 os=$4
+    local name=$1 mem=$2 vcpus=$3 os=$4 shared_dir=$5
     info "defining and starting vm '$name' (${mem} MB memory, $vcpus vcpus, $os)"
+    # virtiofs requires shared memory backing
     virt-install \
         --name "$name" \
         --memory "$mem" \
         --vcpus "$vcpus" \
+        --memorybacking source.type=memfd,access.mode=shared \
         --disk path="$disk_path" \
+        --filesystem source.dir="$shared_dir",target.dir="$SHARE_TAG",driver.type=virtiofs \
         --import \
         --osinfo "$os" \
         --cloud-init user-data="$user_data_file" \
@@ -155,7 +177,7 @@ create_vm() {
 }
 
 main() {
-    local vm_name mem vcpus backing_file os_variant
+    local vm_name mem vcpus shared_dir guest_mount backing_file os_variant
 
     vm_name=$(read_vm_name)
 
@@ -169,6 +191,10 @@ main() {
     vcpus=$(prompt "vcpus" "$DEFAULT_VCPUS")
     require_number "vcpus" "$vcpus"
 
+    shared_dir=$(read_shared_dir)
+    guest_mount=$(prompt "mount point inside the vm" "$DEFAULT_GUEST_MOUNT")
+    [[ "$guest_mount" == /* ]] || die "mount point must be an absolute path, got '$guest_mount'"
+
     backing_file=$(read_backing_file)
     os_variant=$(read_os_variant "$backing_file")
 
@@ -178,9 +204,9 @@ main() {
     info "creating the disk needs root; you may be asked for your password"
     sudo -v || die "sudo authentication failed"
 
-    create_user_data_file "$vm_name"
+    create_user_data_file "$vm_name" "$guest_mount"
     create_disk "$vm_name" "$backing_file"
-    create_vm "$vm_name" "$mem" "$vcpus" "$os_variant"
+    create_vm "$vm_name" "$mem" "$vcpus" "$os_variant" "$shared_dir"
 
     info "refreshing storage pool '$POOL_NAME'"
     if virsh pool-refresh "$POOL_NAME" &>/dev/null; then
@@ -193,6 +219,8 @@ main() {
     echo "vm '$vm_name' created."
     echo "it may take a minute for cloud-init to finish and the network to come up."
     echo "get its IP address with: virsh domifaddr $vm_name"
+    echo "shared: $shared_dir -> $guest_mount (virtiofs tag '$SHARE_TAG')"
+    echo "if it isn't mounted, run in the vm: sudo mount -t virtiofs $SHARE_TAG $guest_mount"
 }
 
 main "$@"
