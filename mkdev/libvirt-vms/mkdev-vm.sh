@@ -8,6 +8,7 @@ export LIBVIRT_DEFAULT_URI=qemu:///system
 readonly BASE_DIR="/var/lib/libvirt/images/base"
 readonly DISK_DIR="/var/lib/libvirt/images/development"
 readonly POOL_NAME="development"
+readonly NETWORK_NAME="development"
 readonly CLOUD_INIT_DIR="$HOME/libvirt-vms/cloud-init"
 readonly TEMPLATE_FILE="$CLOUD_INIT_DIR/template.yaml"
 readonly PLACEHOLDER="{VM_NAME}"
@@ -166,6 +167,7 @@ create_vm() {
         --name "$name" \
         --memory "$mem" \
         --vcpus "$vcpus" \
+        --network "$NETWORK_NAME" \
         --memorybacking source.type=memfd,access.mode=shared \
         --disk path="$disk_path" \
         --filesystem source.dir="$shared_dir",target.dir="$SHARE_TAG",driver.type=virtiofs \
